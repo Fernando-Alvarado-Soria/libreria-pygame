@@ -4,6 +4,7 @@ import os
 import random
 
 pygame.init()
+pygame.mixer.init()  # Inicializar el mixer para audio
 
 size = (800, 600)
 
@@ -39,6 +40,23 @@ corazon_img = pygame.image.load(corazon_path)
 # Redimensionar el corazón para la interfaz (tamaño pequeño)
 corazon_img = pygame.transform.scale(corazon_img, (30, 30))
 
+# Cargar el gato para puntos
+gato_path = os.path.join("Recursos", "gatoPuntos.png")
+gato_img = pygame.image.load(gato_path)
+# Redimensionar para la interfaz
+gato_img = pygame.transform.scale(gato_img, (30, 30))
+# Versión más grande para el powerup
+gato_powerup_img = pygame.transform.scale(gato_img, (50, 50))
+
+# Cargar audio
+try:
+    intro_audio_path = os.path.join("Recursos", "Intro.mp3")
+    pygame.mixer.music.load(intro_audio_path)
+    audio_disponible = True
+except pygame.error:
+    print("Advertencia: No se pudo cargar el archivo de audio. El juego continuará sin música.")
+    audio_disponible = False
+
 # Variables del sistema de arma
 arma_en_pantalla = None  # None cuando no hay arma en pantalla
 tiempo_arma_spawn = 30 * 60  # 30 segundos en frames (30 segundos * 60 FPS)
@@ -59,6 +77,25 @@ vida_en_pantalla = None  # None cuando no hay powerup de vida en pantalla
 tiempo_vida_spawn = 45 * 60  # 45 segundos en frames (45 segundos * 60 FPS)
 contador_vida_spawn = 0
 corazon_powerup_img = pygame.transform.scale(corazon_img, (40, 40))  # Versión más grande para el powerup
+
+# Sistema de puntuación
+puntos = 0
+contador_supervivencia = 0  # Para puntos por supervivencia
+
+# Sistema de powerup de gato (puntos)
+gato_en_pantalla = None
+tiempo_gato_spawn = 60 * 60  # 1 minuto en frames
+contador_gato_spawn = 0
+valor_gato_puntos = 50  # Puntos que da el gato
+
+# Sistema de rayo (powerup por puntos)
+rayo_disponible = False  # Si el jugador puede usar el rayo
+rayo_activo = False
+tiempo_rayo = 15 * 60  # 15 segundos de rayo
+contador_tiempo_rayo = 0
+puntos_para_rayo = 100  # Cada 100 puntos se activa el rayo
+ultimo_rayo_activado = 0  # Para trackear cuándo fue el último rayo
+rayos = []  # Lista para almacenar los rayos activos
 
 # Lista para almacenar múltiples meteoros
 meteoros = []
@@ -96,16 +133,31 @@ def crear_vida_powerup():
     velocidad = 2  # Velocidad aún más lenta para las vidas
     return {'rect': vida_rect, 'velocidad': velocidad}
 
+# Función para crear un powerup de gato (puntos)
+def crear_gato_powerup():
+    gato_rect = gato_powerup_img.get_rect()
+    gato_rect.centerx = random.randint(gato_rect.width//2, size[0] - gato_rect.width//2)
+    gato_rect.bottom = 0
+    velocidad = 2  # Velocidad lenta para facilitar captura
+    return {'rect': gato_rect, 'velocidad': velocidad}
+
 # Función para crear un disparo
 def crear_disparo(x, y):
     disparo_rect = pygame.Rect(x, y, 5, 10)  # Rectángulo pequeño para el disparo
     return {'rect': disparo_rect}
+
+# Función para crear un rayo
+def crear_rayo(x):
+    rayo_rect = pygame.Rect(x, 0, 8, size[1])  # Línea vertical que cubre toda la pantalla
+    return {'rect': rayo_rect, 'duracion': 10}  # El rayo dura 10 frames visible
 
 # Función para reiniciar el juego
 def reiniciar_juego():
     global meteoros, contador_meteoros, juego_activo, game_over
     global arma_en_pantalla, contador_arma_spawn, puede_disparar, contador_tiempo_disparo, disparos, vidas
     global vida_en_pantalla, contador_vida_spawn
+    global puntos, contador_supervivencia, gato_en_pantalla, contador_gato_spawn
+    global rayo_activo, contador_tiempo_rayo, ultimo_rayo_activado
     # Reiniciar posición del personaje
     personaje_rect.centerx = size[0] // 2
     personaje_rect.bottom = size[1] - 20
@@ -128,6 +180,16 @@ def reiniciar_juego():
     # Reiniciar variables del powerup de vida
     vida_en_pantalla = None
     contador_vida_spawn = 0
+    # Reiniciar sistema de puntuación
+    puntos = 0
+    contador_supervivencia = 0
+    gato_en_pantalla = None
+    contador_gato_spawn = 0
+    rayo_disponible = False
+    rayo_activo = False
+    contador_tiempo_rayo = 0
+    ultimo_rayo_activado = 0
+    rayos.clear()
 
 # Crear meteoros iniciales
 for i in range(5):
@@ -142,6 +204,14 @@ game_over = False
 
 clock = pygame.time.Clock()
 
+# Reproducir música de fondo
+if audio_disponible:
+    try:
+        pygame.mixer.music.play(-1)  # -1 para loop infinito
+        pygame.mixer.music.set_volume(0.5)  # Volumen al 50%
+    except pygame.error:
+        print("Advertencia: No se pudo reproducir el audio.")
+
 while True:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -152,6 +222,14 @@ while True:
                 # Crear disparo desde la posición del personaje
                 disparo = crear_disparo(personaje_rect.centerx - 2, personaje_rect.top)
                 disparos.append(disparo)
+        
+        # Detectar rayo con flecha arriba
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_UP:
+            if not game_over and rayo_activo:  # Cambiado de rayo_disponible a rayo_activo
+                # Crear rayo desde la posición del personaje
+                rayo = crear_rayo(personaje_rect.centerx - 4)
+                rayos.append(rayo)
+                # No cambiar rayo_disponible aquí, se puede usar múltiples veces
     
     # Obtener las teclas presionadas
     keys = pygame.key.get_pressed()
@@ -173,6 +251,27 @@ while True:
         else:
             puede_disparar = False
         
+        # Sistema de puntuación por supervivencia (1 punto cada segundo)
+        contador_supervivencia += 1
+        if contador_supervivencia >= 60:  # Cada segundo (60 frames)
+            puntos += 1
+            contador_supervivencia = 0
+        
+        # Verificar si se puede activar el rayo
+        puntos_totales_para_rayo = (puntos // puntos_para_rayo) * puntos_para_rayo
+        if puntos_totales_para_rayo > ultimo_rayo_activado and not rayo_activo:
+            rayo_disponible = True  # Hacer disponible el rayo
+            rayo_activo = True  # Activar período de 15 segundos
+            contador_tiempo_rayo = tiempo_rayo
+            ultimo_rayo_activado = puntos_totales_para_rayo
+        
+        # Manejar tiempo del rayo (período activo de 15 segundos)
+        if rayo_activo:
+            contador_tiempo_rayo -= 1
+            if contador_tiempo_rayo <= 0:
+                rayo_activo = False
+                rayo_disponible = False  # Ya no se puede usar más hasta el siguiente hito
+        
         # Sistema de spawn del arma (cada 30 segundos)
         contador_arma_spawn += 1
         if contador_arma_spawn >= tiempo_arma_spawn and arma_en_pantalla is None:
@@ -184,6 +283,12 @@ while True:
         if contador_vida_spawn >= tiempo_vida_spawn and vida_en_pantalla is None:
             vida_en_pantalla = crear_vida_powerup()
             contador_vida_spawn = 0
+        
+        # Sistema de spawn del gato (puntos) cada 1 minuto
+        contador_gato_spawn += 1
+        if contador_gato_spawn >= tiempo_gato_spawn and gato_en_pantalla is None:
+            gato_en_pantalla = crear_gato_powerup()
+            contador_gato_spawn = 0
         
         # Mover el arma si está en pantalla
         if arma_en_pantalla is not None:
@@ -215,6 +320,20 @@ while True:
             elif vida_en_pantalla['rect'].top > size[1]:
                 vida_en_pantalla = None
         
+        # Mover el gato (puntos) si está en pantalla
+        if gato_en_pantalla is not None:
+            gato_en_pantalla['rect'].y += gato_en_pantalla['velocidad']
+            
+            # Verificar colisión con el personaje
+            if personaje_rect.colliderect(gato_en_pantalla['rect']):
+                # Agregar puntos
+                puntos += valor_gato_puntos
+                gato_en_pantalla = None  # Eliminar gato
+            
+            # Eliminar gato si sale de pantalla
+            elif gato_en_pantalla['rect'].top > size[1]:
+                gato_en_pantalla = None
+        
         # Mover disparos
         disparos_activos = []
         for disparo in disparos:
@@ -225,6 +344,15 @@ while True:
                 disparos_activos.append(disparo)
         
         disparos = disparos_activos
+        
+        # Mover rayos (reducir duración)
+        rayos_activos = []
+        for rayo in rayos:
+            rayo['duracion'] -= 1
+            if rayo['duracion'] > 0:
+                rayos_activos.append(rayo)
+        
+        rayos = rayos_activos
         
         # Crear nuevos meteoros periódicamente
         contador_meteoros += 1
@@ -249,8 +377,17 @@ while True:
             for disparo in disparos:
                 if meteoro['rect'].colliderect(disparo['rect']):
                     meteoro_destruido = True  # Meteoro destruido
+                    puntos += 10  # Puntos por destruir meteoro
+                    # Los disparos normales se eliminan siempre
                 else:
                     disparos_restantes.append(disparo)  # Disparo no colisionó
+            
+            # Verificar colisión con rayos
+            for rayo in rayos:
+                if meteoro['rect'].colliderect(rayo['rect']):
+                    meteoro_destruido = True  # Meteoro destruido por rayo
+                    puntos += 15  # Más puntos por rayo (más poderoso)
+                    # Los rayos no se eliminan, pueden destruir múltiples meteoros
             
             disparos = disparos_restantes  # Actualizar lista de disparos
             
@@ -296,9 +433,26 @@ while True:
     if vida_en_pantalla is not None:
         screen.blit(corazon_powerup_img, vida_en_pantalla['rect'])
     
+    # Dibujar el gato (puntos) si está en pantalla
+    if gato_en_pantalla is not None:
+        screen.blit(gato_powerup_img, gato_en_pantalla['rect'])
+    
     # Dibujar todos los disparos
     for disparo in disparos:
-        pygame.draw.rect(screen, (255, 255, 0), disparo['rect'])  # Disparos amarillos
+        # Disparos normales (amarillos)
+        pygame.draw.rect(screen, (255, 255, 0), disparo['rect'])
+    
+    # Dibujar todos los rayos
+    for rayo in rayos:
+        # Rayo como línea vertical gruesa azul eléctrica
+        pygame.draw.rect(screen, (0, 200, 255), rayo['rect'])  # Azul eléctrico
+        # Efecto de brillo en los bordes
+        pygame.draw.rect(screen, (255, 255, 255), rayo['rect'], 2)
+        # Efecto de partículas (pequeños rectángulos alrededor)
+        for i in range(5):
+            offset_x = random.randint(-3, 3)
+            particula_rect = pygame.Rect(rayo['rect'].x + offset_x, random.randint(0, size[1]), 2, 2)
+            pygame.draw.rect(screen, (200, 230, 255), particula_rect)
     
     # Dibujar interfaz de vidas (esquina superior derecha)
     for i in range(vidas):
@@ -306,12 +460,24 @@ while True:
         y = 10
         screen.blit(corazon_img, (x, y))
     
+    # Dibujar interfaz de puntuación (esquina superior izquierda)
+    font_puntos = pygame.font.Font(None, 32)
+    screen.blit(gato_img, (10, 110))  # Icono del gato
+    texto_puntos = font_puntos.render(str(puntos), True, (255, 255, 255))
+    screen.blit(texto_puntos, (45, 115))
+    
+    # Mostrar próximo rayo
+    puntos_siguiente_rayo = ((puntos // puntos_para_rayo) + 1) * puntos_para_rayo
+    puntos_restantes = puntos_siguiente_rayo - puntos
+    font_pequena = pygame.font.Font(None, 20)
+    texto_siguiente_rayo = font_pequena.render(f"Próximo rayo: {puntos_restantes} puntos", True, (200, 200, 200))
+    screen.blit(texto_siguiente_rayo, (10, 145))
+    
     # Mostrar indicador de disparo disponible
     if puede_disparar:
         font_pequena = pygame.font.Font(None, 24)
         texto_disparo = font_pequena.render("DISPARO DISPONIBLE", True, (0, 255, 0))
         screen.blit(texto_disparo, (10, 10))
-        
         # Mostrar tiempo restante
         tiempo_restante = contador_tiempo_disparo // 60  # Convertir frames a segundos
         texto_tiempo = font_pequena.render(f"Tiempo: {tiempo_restante}s", True, (0, 255, 0))
@@ -326,6 +492,15 @@ while True:
         texto_arma_tiempo = font_pequena.render(f"Próxima arma en: {tiempo_hasta_arma}s", True, (255, 255, 0))
         screen.blit(texto_arma_tiempo, (10, 35))
     
+    # Mostrar estado del rayo
+    if rayo_activo:
+        font_pequena = pygame.font.Font(None, 24)
+        texto_rayo = font_pequena.render("RAYO ACTIVO - Flecha ARRIBA", True, (0, 255, 255))
+        screen.blit(texto_rayo, (10, 170))
+        tiempo_rayo_restante = contador_tiempo_rayo // 60
+        texto_tiempo_rayo = font_pequena.render(f"Tiempo rayo: {tiempo_rayo_restante}s", True, (0, 255, 255))
+        screen.blit(texto_tiempo_rayo, (10, 195))
+    
     # Mostrar si hay arma cayendo
     if arma_en_pantalla is not None:
         font_pequena = pygame.font.Font(None, 24)
@@ -337,6 +512,12 @@ while True:
         font_pequena = pygame.font.Font(None, 24)
         texto_vida_cayendo = font_pequena.render("¡VIDA EXTRA CAYENDO!", True, (255, 0, 255))
         screen.blit(texto_vida_cayendo, (10, 85))
+    
+    # Mostrar si hay gato (puntos) cayendo
+    if gato_en_pantalla is not None:
+        font_pequena = pygame.font.Font(None, 24)
+        texto_gato_cayendo = font_pequena.render(f"¡GATO CAYENDO! (+{valor_gato_puntos} pts)", True, (255, 165, 0))
+        screen.blit(texto_gato_cayendo, (10, 110 if vida_en_pantalla is None else 110))
     
     # Mostrar mensaje de Game Over si es necesario
     if game_over:
